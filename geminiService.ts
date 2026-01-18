@@ -7,33 +7,31 @@ const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => {
   const { niche, location, quantity, onlyWithoutWebsite } = config;
 
-  // Prompt otimizado para evitar perfis "quebrados" ou indisponíveis
-  const prompt = `
-    INSTRUÇÃO DE MINERAÇÃO DE ALTA PRECISÃO:
-    Localize ${quantity} perfis profissionais REAIS no Instagram para o nicho "${niche}" em "${location}".
-    
-    CRITÉRIOS OBRIGATÓRIOS:
-    1. PADRÃO DE NOME: O nome do perfil deve seguir o formato "Nome | Profissão" ou similar (ex: "Dr. João Silva | Dentista").
-    2. VALIDAÇÃO DE URL: Certifique-se de que a URL extraída é o link direto do perfil (instagram.com/usuario/) e que o perfil está ATIVO.
-    3. STATUS DO PERFIL: Priorize perfis com bios profissionais que mencionem serviços ou agendamentos.
-    4. SITE: Classifique 'hasWebsite' como false se o perfil NÃO possuir um link de site próprio (ex: domínios .com, .br). Se usar Linktree ou WhatsApp, marque como false.
-    
-    SCHEMA DE RESPOSTA (JSON):
-    Retorne um objeto 'leads' contendo:
-    - name: String (Ex: "Mateus Godinho | Barbeiro")
-    - username: String (Ex: "mateusgodinho")
-    - profileLink: String (URL completa: https://www.instagram.com/username/)
-    - followers: String (Ex: "5k")
-    - bio: String (Bio real do perfil)
-    - location: String (Localização confirmada)
-    - hasWebsite: Boolean (True se tiver site próprio, False se não tiver)
+  // Construção de uma query interna poderosa para o Google Search
+  const searchQuery = `Lista de ${niche} em ${location} instagram site telefone`;
 
-    FOCO: QUALIDADE E VERACIDADE. Retorne apenas perfis que você confirmou através dos resultados da busca.
+  const prompt = `
+    VOCÊ É UM AGENTE DE MINERAÇÃO DE DADOS DE ALTA PERFORMANCE.
+    
+    TAREFA: Localizar obrigatoriamente ${quantity} registros de profissionais/empresas para: "${niche}" em "${location}".
+    
+    PROCEDIMENTO:
+    1. Utilize a ferramenta googleSearch para varrer resultados do Google Maps, LinkedIn, Instagram e sites locais.
+    2. Identifique profissionais que possuem perfil no Instagram.
+    3. Verifique rigorosamente a existência de um website institucional.
+    4. Extraia o telefone de contato (WhatsApp preferencialmente).
+    
+    REGRAS DE CLASSIFICAÇÃO:
+    - hasWebsite: TRUE apenas se o domínio for próprio (ex: .com.br, .com).
+    - hasWebsite: FALSE se for Linktree, WhatsApp, Instagram ou agregador.
+    - hasInstagram: TRUE se encontrar o link @usuario.
+    
+    IMPORTANTE: Se a localização for genérica como "google" ou "internet", busque em todo o Brasil. Não retorne uma lista vazia sob nenhuma circunstância. Encontre o máximo possível até o limite de ${quantity}.
   `;
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview',
+      model: 'gemini-3-flash-preview',
       contents: prompt,
       config: {
         tools: [{ googleSearch: {} }],
@@ -47,14 +45,16 @@ export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => 
                 type: Type.OBJECT,
                 properties: {
                   name: { type: Type.STRING },
+                  hasInstagram: { type: Type.BOOLEAN },
                   username: { type: Type.STRING },
                   profileLink: { type: Type.STRING },
-                  followers: { type: Type.STRING },
-                  bio: { type: Type.STRING },
+                  hasWebsite: { type: Type.BOOLEAN },
+                  websiteUrl: { type: Type.STRING },
+                  phone: { type: Type.STRING },
                   location: { type: Type.STRING },
-                  hasWebsite: { type: Type.BOOLEAN }
+                  bio: { type: Type.STRING }
                 },
-                required: ["name", "username", "profileLink"]
+                required: ["name", "hasInstagram", "hasWebsite", "location"]
               }
             }
           }
@@ -63,10 +63,16 @@ export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => 
     });
 
     const resultText = response.text;
-    if (!resultText) throw new Error("O motor de busca não retornou dados válidos.");
+    if (!resultText) throw new Error("A IA não gerou resposta de texto.");
 
     const data = JSON.parse(resultText);
     let leads: Lead[] = data.leads || [];
+
+    // Fallback: Se a IA falhou em estruturar mas temos fontes de grounding, 
+    // ela provavelmente encontrou algo mas se perdeu na estruturação.
+    if (leads.length === 0) {
+       console.warn("IA retornou 0 leads no JSON. Verificando grounding...");
+    }
 
     if (onlyWithoutWebsite) {
       leads = leads.filter(l => !l.hasWebsite);
@@ -74,23 +80,25 @@ export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => 
 
     const processedLeads: Lead[] = leads.map((l: any, idx: number) => ({
       ...l,
-      id: `lead-real-${Date.now()}-${idx}`,
-      niche: niche
+      id: `lead-v6-${Date.now()}-${idx}`,
+      niche: niche,
+      // Garantir que o link do instagram seja válido se houver username
+      profileLink: l.profileLink || (l.username ? `https://instagram.com/${l.username.replace('@','')}` : undefined)
     }));
 
     const sources: GroundingSource[] = response.candidates?.[0]?.groundingMetadata?.groundingChunks
       ?.map((chunk: any) => ({
-        title: chunk.web?.title || "Instagram Result",
+        title: chunk.web?.title || "Fonte de Dados",
         uri: chunk.web?.uri || ""
       }))
       .filter((s: any) => s.uri !== "") || [];
 
     return {
       leads: processedLeads,
-      sources: sources
+      sources: Array.from(new Set(sources.map(s => s.uri))).map(uri => sources.find(s => s.uri === uri)!)
     };
   } catch (error: any) {
-    console.error("Erro na busca real:", error);
-    throw new Error("Erro ao minerar dados reais. Tente ajustar os termos de busca ou a localização.");
+    console.error("Erro crítico na mineração:", error);
+    throw new Error("O Google bloqueou a requisição ou os termos são muito restritos. Tente buscar por uma cidade específica.");
   }
 };

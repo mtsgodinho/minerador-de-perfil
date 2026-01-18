@@ -2,14 +2,16 @@
 export interface Lead {
   id: string;
   name: string;
-  username: string;
-  profileLink: string;
-  followers: string;
-  bio: string;
-  location: string;
+  username?: string; // Instagram username
+  profileLink?: string; // Instagram link
+  hasInstagram: boolean;
   hasWebsite: boolean;
-  avatarUrl?: string;
+  websiteUrl?: string;
+  phone?: string;
+  location: string;
+  bio: string;
   niche: string;
+  isFavorite?: boolean;
 }
 
 export interface GroundingSource {
@@ -35,3 +37,5 @@ export enum AppStatus {
   COMPLETED = 'COMPLETED',
   ERROR = 'ERROR'
 }
+
+export type TabType = 'EXPLORE' | 'FAVORITES';
