@@ -2,13 +2,11 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Lead, SearchConfig, MiningResult, GroundingSource } from "./types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
 export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => {
   const { niche, location, quantity, onlyWithoutWebsite } = config;
 
-  // Construção de uma query interna poderosa para o Google Search
-  const searchQuery = `Lista de ${niche} em ${location} instagram site telefone`;
+  // Instanciação dentro da função conforme as diretrizes
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
   const prompt = `
     VOCÊ É UM AGENTE DE MINERAÇÃO DE DADOS DE ALTA PERFORMANCE.
@@ -18,15 +16,18 @@ export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => 
     PROCEDIMENTO:
     1. Utilize a ferramenta googleSearch para varrer resultados do Google Maps, LinkedIn, Instagram e sites locais.
     2. Identifique profissionais que possuem perfil no Instagram.
-    3. Verifique rigorosamente a existência de um website institucional.
+    3. Verifique rigorosamente a existência de um website institucional (domínio próprio).
     4. Extraia o telefone de contato (WhatsApp preferencialmente).
     
-    REGRAS DE CLASSIFICAÇÃO:
+    CRITÉRIO DE INSTAGRAM:
+    - Se encontrar o @usuario ou o link instagram.com/usuario, extraia obrigatoriamente.
+    - O campo profileLink deve ser a URL completa (https://www.instagram.com/usuario/).
+    
+    REGRAS DE CLASSIFICAÇÃO DE SITE:
     - hasWebsite: TRUE apenas se o domínio for próprio (ex: .com.br, .com).
     - hasWebsite: FALSE se for Linktree, WhatsApp, Instagram ou agregador.
-    - hasInstagram: TRUE se encontrar o link @usuario.
     
-    IMPORTANTE: Se a localização for genérica como "google" ou "internet", busque em todo o Brasil. Não retorne uma lista vazia sob nenhuma circunstância. Encontre o máximo possível até o limite de ${quantity}.
+    IMPORTANTE: Retorne um JSON válido com a lista de leads. Se encontrar menos que ${quantity}, retorne o que encontrar, mas não retorne vazio.
   `;
 
   try {
@@ -63,28 +64,34 @@ export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => 
     });
 
     const resultText = response.text;
-    if (!resultText) throw new Error("A IA não gerou resposta de texto.");
+    if (!resultText) throw new Error("A IA não gerou resposta.");
 
     const data = JSON.parse(resultText);
     let leads: Lead[] = data.leads || [];
-
-    // Fallback: Se a IA falhou em estruturar mas temos fontes de grounding, 
-    // ela provavelmente encontrou algo mas se perdeu na estruturação.
-    if (leads.length === 0) {
-       console.warn("IA retornou 0 leads no JSON. Verificando grounding...");
-    }
 
     if (onlyWithoutWebsite) {
       leads = leads.filter(l => !l.hasWebsite);
     }
 
-    const processedLeads: Lead[] = leads.map((l: any, idx: number) => ({
-      ...l,
-      id: `lead-v6-${Date.now()}-${idx}`,
-      niche: niche,
-      // Garantir que o link do instagram seja válido se houver username
-      profileLink: l.profileLink || (l.username ? `https://instagram.com/${l.username.replace('@','')}` : undefined)
-    }));
+    const processedLeads: Lead[] = leads.map((l: any, idx: number) => {
+      // Garantir que o link do instagram seja absoluto e funcional
+      let finalProfileLink = l.profileLink;
+      const cleanUsername = l.username ? l.username.replace('@', '').trim() : '';
+      
+      if (!finalProfileLink && cleanUsername) {
+        finalProfileLink = `https://www.instagram.com/${cleanUsername}/`;
+      } else if (finalProfileLink && !finalProfileLink.startsWith('http')) {
+        finalProfileLink = `https://www.instagram.com/${finalProfileLink.replace(/^\//, '')}`;
+      }
+
+      return {
+        ...l,
+        id: `lead-v7-${Date.now()}-${idx}`,
+        niche: niche,
+        username: cleanUsername,
+        profileLink: finalProfileLink
+      };
+    });
 
     const sources: GroundingSource[] = response.candidates?.[0]?.groundingMetadata?.groundingChunks
       ?.map((chunk: any) => ({
@@ -95,10 +102,10 @@ export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => 
 
     return {
       leads: processedLeads,
-      sources: Array.from(new Set(sources.map(s => s.uri))).map(uri => sources.find(s => s.uri === uri)!)
+      sources: sources
     };
   } catch (error: any) {
-    console.error("Erro crítico na mineração:", error);
-    throw new Error("O Google bloqueou a requisição ou os termos são muito restritos. Tente buscar por uma cidade específica.");
+    console.error("Erro na mineração:", error);
+    throw new Error(error.message || "Erro crítico na mineração de dados.");
   }
 };
