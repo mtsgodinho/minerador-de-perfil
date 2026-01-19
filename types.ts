@@ -1,9 +1,18 @@
 
+export enum AppStatus {
+  IDLE = 'IDLE',
+  SEARCHING = 'SEARCHING',
+  COMPLETED = 'COMPLETED',
+  ERROR = 'ERROR'
+}
+
+export type TabType = 'EXPLORE' | 'FAVORITES';
+
 export interface Lead {
   id: string;
   name: string;
-  username?: string; // Instagram username
-  profileLink?: string; // Instagram link
+  username?: string;
+  profileLink?: string;
   hasInstagram: boolean;
   hasWebsite: boolean;
   websiteUrl?: string;
@@ -30,12 +39,3 @@ export interface SearchConfig {
   quantity: number;
   onlyWithoutWebsite: boolean;
 }
-
-export enum AppStatus {
-  IDLE = 'IDLE',
-  SEARCHING = 'SEARCHING',
-  COMPLETED = 'COMPLETED',
-  ERROR = 'ERROR'
-}
-
-export type TabType = 'EXPLORE' | 'FAVORITES';
