@@ -8,6 +8,7 @@ import { Lead, SearchConfig, MiningResult, GroundingSource } from "./types";
 export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => {
   const { niche, location, quantity, onlyWithoutWebsite } = config;
 
+  // Verificação e uso da variável de ambiente correta conforme solicitado (API_KEY)
   if (!process.env.API_KEY) {
     throw new Error("API_KEY não configurada no ambiente. Adicione sua chave para minerar perfis reais.");
   }
