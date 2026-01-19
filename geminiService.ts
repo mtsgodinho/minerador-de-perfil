@@ -8,13 +8,12 @@ import { Lead, SearchConfig, MiningResult, GroundingSource } from "./types";
 export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => {
   const { niche, location, quantity, onlyWithoutWebsite } = config;
 
-  // Verificação e uso da variável de ambiente correta conforme solicitado (API_KEY)
-  if (!process.env.API_KEY) {
-    throw new Error("API_KEY não configurada no ambiente. Adicione sua chave para minerar perfis reais.");
-  }
-
+  // Criamos a instância logo antes da chamada para garantir que pegue a chave mais atual do seletor.
+  // API key is handled externally via process.env.API_KEY.
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const modelName = 'gemini-3-pro-preview';
+  
+  // O modelo 'gemini-3-pro-image-preview' é obrigatório para usar a ferramenta googleSearch
+  const modelName = 'gemini-3-pro-image-preview';
 
   const systemInstruction = `
     Você é um agente especializado em pesquisa de perfis públicos reais do Instagram.
@@ -66,9 +65,19 @@ export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => 
       }
     });
 
-    const resultText = response.text;
+    // Fix: Clean citations like [1], [2] that Google Search Grounding might inject into the JSON text
+    // The library returns text as a property, not a method.
+    let resultText = response.text || '';
+    resultText = resultText.replace(/\[\d+\]/g, '').trim();
+    
+    // Attempt to extract JSON if there's any surrounding text mixed with grounding citations
+    const jsonMatch = resultText.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+    if (jsonMatch) {
+      resultText = jsonMatch[0];
+    }
+
     if (!resultText) {
-      throw new Error("O modelo não retornou dados. Tente uma busca mais específica.");
+      throw new Error("O modelo não retornou dados. Tente uma busca mais específica ou verifique sua chave API.");
     }
 
     const data = JSON.parse(resultText);
@@ -83,6 +92,8 @@ export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => 
       leads = leads.filter(l => !l.hasWebsite);
     }
 
+    // Fix: Correct extraction of grounding sources following the library response structure.
+    // Grounding URLs MUST be extracted and displayed as per guidelines.
     const sources: GroundingSource[] = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => ({
       title: chunk.web?.title || "Fonte da Busca",
       uri: chunk.web?.uri || ""
@@ -94,6 +105,12 @@ export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => 
     };
   } catch (error: any) {
     console.error("Mining error:", error);
+    
+    // Tratamento específico para erro de chave ausente no Pro como exigido pelas diretrizes.
+    if (error.message?.includes("Requested entity was not found")) {
+      throw new Error("Chave API inválida ou não encontrada. Por favor, clique em 'Configurar Chave API' e selecione um projeto faturável.");
+    }
+    
     throw new Error(`Erro na engine de mineração: ${error.message}`);
   }
 };

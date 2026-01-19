@@ -3,6 +3,18 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { AppStatus, Lead, SearchConfig, GroundingSource, TabType } from './types';
 import { mineLeads } from './geminiService';
 
+// Fix: Use AIStudio interface and declare it globally with readonly modifier to match expected environment definition.
+declare global {
+  interface AIStudio {
+    hasSelectedApiKey: () => Promise<boolean>;
+    openSelectKey: () => Promise<void>;
+  }
+
+  interface Window {
+    readonly aistudio: AIStudio;
+  }
+}
+
 const App: React.FC = () => {
   const [config, setConfig] = useState<SearchConfig>({
     niche: 'Dentista',
@@ -28,9 +40,26 @@ const App: React.FC = () => {
     localStorage.setItem('instalead_favorites', JSON.stringify(favorites));
   }, [favorites]);
 
+  const handleOpenKeySelector = async () => {
+    try {
+      await window.aistudio.openSelectKey();
+      setError(null);
+    } catch (err) {
+      console.error("Erro ao abrir seletor de chaves:", err);
+    }
+  };
+
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (status === AppStatus.SEARCHING) return;
+
+    // Verificar se a chave foi selecionada (obrigatório para Gemini Pro)
+    const hasKey = await window.aistudio.hasSelectedApiKey();
+    if (!hasKey) {
+      setError("Você precisa configurar uma Chave API paga para usar a mineração Pro. Clique no botão de configuração acima.");
+      setStatus(AppStatus.ERROR);
+      return;
+    }
 
     setActiveTab('EXPLORE');
     setStatus(AppStatus.SEARCHING);
@@ -39,7 +68,6 @@ const App: React.FC = () => {
     setLeads([]);
     setSources([]);
 
-    // O modelo Pro com Thinking e Grounding demora cerca de 20-30s para grandes volumes
     const duration = 25000; 
     const startTime = Date.now();
 
@@ -100,13 +128,21 @@ const App: React.FC = () => {
         <div className="relative group animate-flicker">
           <img src="https://i.imgur.com/XCTkJN0.png" alt="TECHVIEW" className="h-20 md:h-24 relative" />
         </div>
-        <p className="mt-4 font-orbitron text-[10px] tracking-[0.5em] text-[#00f3ff] opacity-80 uppercase">Ultra Miner Pro v7.0 | Grounding Ativo</p>
+        <div className="mt-4 flex flex-col items-center gap-2">
+          <p className="font-orbitron text-[10px] tracking-[0.5em] text-[#00f3ff] opacity-80 uppercase">Ultra Miner Pro v7.0 | Grounding Ativo</p>
+          <button 
+            onClick={handleOpenKeySelector}
+            className="mt-2 bg-[#bc00ff]/10 border border-[#bc00ff]/50 text-[#bc00ff] text-[9px] font-bold px-4 py-1 rounded hover:bg-[#bc00ff] hover:text-white transition-all uppercase tracking-widest"
+          >
+            Configurar Chave API (Pago)
+          </button>
+        </div>
       </header>
 
       <main className="w-full max-w-6xl px-4 pb-20 space-y-8">
         <section className="bg-[#0a0a14] border border-[#00f3ff]/20 rounded-2xl p-8 shadow-2xl relative overflow-hidden">
           <div className="absolute top-0 right-0 p-2">
-            <span className="text-[8px] font-bold text-[#00f3ff]/30 animate-pulse">ENGINE: GEMINI-3-PRO</span>
+            <span className="text-[8px] font-bold text-[#00f3ff]/30 animate-pulse">ENGINE: GEMINI-3-PRO + SEARCH</span>
           </div>
           <form onSubmit={handleSearch} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 items-end">
             <div className="space-y-2">
@@ -142,14 +178,31 @@ const App: React.FC = () => {
             <div className="w-full bg-black h-1 rounded-full overflow-hidden">
               <div className="bg-gradient-to-r from-[#00f3ff] to-[#bc00ff] h-full transition-all duration-300 shadow-[0_0_15px_#00f3ff]" style={{ width: `${progress}%` }}></div>
             </div>
-            <p className="text-[9px] text-gray-500 uppercase tracking-widest">O Modelo Pro está analisando links e confirmando perfis.</p>
+            <p className="text-[9px] text-gray-500 uppercase tracking-widest">A ferramenta Google Search está localizando perfis públicos reais agora.</p>
           </div>
         )}
 
         <div className="flex gap-4 border-b border-white/5 pb-2">
           <button onClick={() => setActiveTab('EXPLORE')} className={`font-orbitron text-[10px] tracking-widest px-4 py-2 transition-all ${activeTab === 'EXPLORE' ? 'text-[#00f3ff] border-b border-[#00f3ff]' : 'text-gray-500'}`}>LEADS ENCONTRADOS ({leads.length})</button>
           <button onClick={() => setActiveTab('FAVORITES')} className={`font-orbitron text-[10px] tracking-widest px-4 py-2 transition-all ${activeTab === 'FAVORITES' ? 'text-[#bc00ff] border-b border-[#bc00ff]' : 'text-gray-500'}`}>SALVOS ({favorites.length})</button>
+          {(leads.length > 0 || favorites.length > 0) && (
+            <button onClick={exportCSV} className="ml-auto text-[9px] font-bold text-[#00f3ff] uppercase hover:underline">Exportar CSV</button>
+          )}
         </div>
+
+        {/* Fix: Always extract the URLs from groundingChunks and list them on the web app when Google Search is used. */}
+        {sources.length > 0 && activeTab === 'EXPLORE' && (
+          <div className="bg-black/40 border border-[#00f3ff]/10 rounded-lg p-4 space-y-2">
+            <h5 className="text-[9px] font-bold text-gray-500 uppercase tracking-widest">Fontes de Grounding (Google Search):</h5>
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              {sources.map((source, idx) => (
+                <a key={idx} href={source.uri} target="_blank" rel="noopener noreferrer" className="text-[9px] text-[#00f3ff]/60 hover:text-[#00f3ff] transition-colors underline truncate max-w-[200px]">
+                  {source.title}
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
 
         <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {(activeTab === 'EXPLORE' ? leads : favorites).map((lead) => (
@@ -168,7 +221,7 @@ const App: React.FC = () => {
                 <div className="flex gap-2">
                   <div className={`flex-1 p-2 rounded border text-center ${lead.hasInstagram ? 'border-green-900/30 bg-green-950/10' : 'border-red-900/30 bg-red-950/10'}`}>
                     <p className="text-[7px] text-gray-500 font-bold uppercase">Instagram</p>
-                    <p className="text-[9px] font-bold text-white truncate">{lead.username || (lead.hasInstagram ? 'LINK ATIVO' : 'N/A')}</p>
+                    <p className="text-[9px] font-bold text-white truncate">{lead.username ? `@${lead.username}` : (lead.hasInstagram ? 'LINK ATIVO' : 'N/A')}</p>
                   </div>
                   <div className={`flex-1 p-2 rounded border text-center ${lead.hasWebsite ? 'border-green-900/30 bg-green-950/10' : 'border-red-900/30 bg-red-950/10'}`}>
                     <p className="text-[7px] text-gray-500 font-bold uppercase">Website</p>
@@ -197,7 +250,10 @@ const App: React.FC = () => {
           <div className="bg-red-900/10 border border-red-500/30 rounded-xl p-8 text-center space-y-4">
             <h4 className="font-orbitron text-red-500 font-bold uppercase">Erro na Matriz Pro</h4>
             <p className="text-xs text-red-400/80">{error}</p>
-            <button onClick={() => setStatus(AppStatus.IDLE)} className="bg-red-500 text-black px-6 py-2 rounded text-[10px] font-bold uppercase hover:bg-red-400 transition-all">Resetar Engine</button>
+            <div className="flex gap-4 justify-center">
+              <button onClick={() => setStatus(AppStatus.IDLE)} className="bg-white/10 text-white px-6 py-2 rounded text-[10px] font-bold uppercase hover:bg-white/20 transition-all">Resetar</button>
+              <button onClick={handleOpenKeySelector} className="bg-red-500 text-black px-6 py-2 rounded text-[10px] font-bold uppercase hover:bg-red-400 transition-all">Configurar Chave API</button>
+            </div>
           </div>
         )}
       </main>
