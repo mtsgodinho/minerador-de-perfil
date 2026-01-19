@@ -1,49 +1,98 @@
 
+import { GoogleGenAI, Type } from "@google/genai";
 import { Lead, SearchConfig, MiningResult, GroundingSource } from "./types";
 
 /**
- * Função simulada para evitar erros de deploy e validar a interface.
- * Em produção, esta função deve chamar a API do Gemini.
+ * Função que utiliza a API do Gemini com Google Search Grounding para minerar perfis reais do Instagram.
  */
 export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => {
   const { niche, location, quantity, onlyWithoutWebsite } = config;
 
-  // Simula delay de rede e processamento da IA
-  await new Promise(resolve => setTimeout(resolve, 2500));
+  if (!process.env.API_KEY) {
+    throw new Error("API_KEY não configurada no ambiente. Adicione sua chave para minerar perfis reais.");
+  }
 
-  // Gerador de leads mockados baseados nos inputs do usuário
-  const mockLeads: Lead[] = Array.from({ length: quantity }).map((_, i) => {
-    const hasWebsite = Math.random() > 0.7; // 30% de chance de ter site
-    const name = `Dr(a). ${["Lucas", "Mariana", "Roberto", "Ana", "Carlos", "Beatriz"][i % 6]} ${["Silva", "Santos", "Oliveira", "Costa"][i % 4]}`;
-    const user = `${niche.toLowerCase().replace(/\s/g, '_')}_${i + 100}`;
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const modelName = 'gemini-3-pro-preview';
+
+  const systemInstruction = `
+    Você é um agente especializado em pesquisa de perfis públicos reais do Instagram.
+    Sua tarefa é retornar uma lista de perfis REAIS, EXISTENTES e PÚBLICOS do Instagram, com base nos parâmetros do usuário.
+
+    ### REGRAS OBRIGATÓRIAS
+    - Retorne APENAS perfis reais e públicos do Instagram.
+    - NÃO invente usernames, nomes ou links.
+    - NÃO gere exemplos fictícios.
+    - Evite perfis corporativos gigantes; priorize profissionais autônomos ou pequenos negócios locais.
+    - Use obrigatoriamente a ferramenta googleSearch para validar e encontrar os perfis.
+    - Se encontrar perfis que usam Linktree ou Beacons no lugar de um site profissional próprio, considere-os como leads qualificados para venda de site.
+  `;
+
+  const prompt = `Localize exatamente ${quantity} perfis de Instagram para o nicho "${niche}" em "${location}". 
+  ${onlyWithoutWebsite ? "Dê prioridade máxima para perfis que NÃO tenham site próprio oficial." : ""}`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: modelName,
+      contents: prompt,
+      config: {
+        systemInstruction,
+        tools: [{ googleSearch: {} }],
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            leads: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING, description: "Nome visível no perfil" },
+                  username: { type: Type.STRING, description: "Username do Instagram sem @" },
+                  profileLink: { type: Type.STRING, description: "Link completo do perfil" },
+                  bio: { type: Type.STRING, description: "Resumo ou Bio do perfil" },
+                  location: { type: Type.STRING, description: "Localização se disponível" },
+                  hasWebsite: { type: Type.BOOLEAN, description: "Se possui site profissional próprio" },
+                  websiteUrl: { type: Type.STRING, nullable: true },
+                  phone: { type: Type.STRING, nullable: true, description: "WhatsApp ou telefone extraído" },
+                  followers: { type: Type.STRING, nullable: true }
+                },
+                required: ["name", "username", "profileLink", "bio", "location", "hasWebsite"]
+              }
+            }
+          }
+        }
+      }
+    });
+
+    const resultText = response.text;
+    if (!resultText) {
+      throw new Error("O modelo não retornou dados. Tente uma busca mais específica.");
+    }
+
+    const data = JSON.parse(resultText);
+    let leads: Lead[] = (data.leads || []).map((l: any, idx: number) => ({
+      ...l,
+      id: `lead-real-${Date.now()}-${idx}`,
+      niche: niche,
+      hasInstagram: true
+    }));
+
+    if (onlyWithoutWebsite) {
+      leads = leads.filter(l => !l.hasWebsite);
+    }
+
+    const sources: GroundingSource[] = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => ({
+      title: chunk.web?.title || "Fonte da Busca",
+      uri: chunk.web?.uri || ""
+    })).filter((s: any) => s.uri) || [];
 
     return {
-      id: `mock-${Date.now()}-${i}`,
-      name: name,
-      username: `@${user}`,
-      profileLink: `https://www.instagram.com/${user}/`,
-      hasInstagram: true,
-      hasWebsite: hasWebsite,
-      websiteUrl: hasWebsite ? `https://www.clinica${user}.com.br` : undefined,
-      phone: `(11) 9${Math.floor(10000000 + Math.random() * 90000000)}`,
-      location: `${location} - SP`,
-      bio: `Especialista em ${niche}. Atendimento humanizado e tecnologia de ponta para sua saúde.`,
-      niche: niche
+      leads,
+      sources
     };
-  });
-
-  // Filtra se o usuário solicitou apenas sem site
-  const filteredLeads = onlyWithoutWebsite 
-    ? mockLeads.filter(l => !l.hasWebsite) 
-    : mockLeads;
-
-  const mockSources: GroundingSource[] = [
-    { title: `Google Search: ${niche} em ${location}`, uri: "https://google.com" },
-    { title: "Instagram Business Directory", uri: "https://instagram.com" }
-  ];
-
-  return {
-    leads: filteredLeads,
-    sources: mockSources
-  };
+  } catch (error: any) {
+    console.error("Mining error:", error);
+    throw new Error(`Erro na engine de mineração: ${error.message}`);
+  }
 };

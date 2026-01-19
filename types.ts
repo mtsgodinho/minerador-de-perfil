@@ -21,6 +21,7 @@ export interface Lead {
   bio: string;
   niche: string;
   isFavorite?: boolean;
+  followers?: string;
 }
 
 export interface GroundingSource {
