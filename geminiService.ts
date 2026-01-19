@@ -9,11 +9,11 @@ export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => 
   const { niche, location, quantity, onlyWithoutWebsite } = config;
 
   // Criamos a instância logo antes da chamada para garantir que pegue a chave mais atual do seletor.
-  // API key is handled externally via process.env.API_KEY.
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
-  // O modelo 'gemini-3-pro-image-preview' é obrigatório para usar a ferramenta googleSearch
-  const modelName = 'gemini-3-pro-image-preview';
+  // Use 'gemini-3-pro-preview' for complex text reasoning and structured JSON output.
+  // This model supports googleSearch grounding and responseSchema simultaneously.
+  const modelName = 'gemini-3-pro-preview';
 
   const systemInstruction = `
     Você é um agente especializado em pesquisa de perfis públicos reais do Instagram.
@@ -23,13 +23,14 @@ export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => 
     - Retorne APENAS perfis reais e públicos do Instagram.
     - NÃO invente usernames, nomes ou links.
     - NÃO gere exemplos fictícios.
-    - Evite perfis corporativos gigantes; priorize profissionais autônomos ou pequenos negócios locais.
-    - Use obrigatoriamente a ferramenta googleSearch para validar e encontrar os perfis.
-    - Se encontrar perfis que usam Linktree ou Beacons no lugar de um site profissional próprio, considere-os como leads qualificados para venda de site.
+    - Priorize profissionais autônomos ou pequenos negócios locais.
+    - Use a ferramenta googleSearch para validar a existência dos perfis antes de listá-los.
+    - O campo "hasWebsite" deve ser true somente se o profissional tiver um site oficial próprio (ex: .com.br). Linktree/Instagram direto contam como false.
+    - Retorne estritamente um JSON válido seguindo o esquema solicitado.
   `;
 
-  const prompt = `Localize exatamente ${quantity} perfis de Instagram para o nicho "${niche}" em "${location}". 
-  ${onlyWithoutWebsite ? "Dê prioridade máxima para perfis que NÃO tenham site próprio oficial." : ""}`;
+  const prompt = `Encontre ${quantity} perfis REAIS do Instagram para o nicho "${niche}" na cidade de "${location}". 
+  Foque em profissionais que ${onlyWithoutWebsite ? "não pareçam ter um site profissional próprio ainda" : "atuem no setor"}.`;
 
   try {
     const response = await ai.models.generateContent({
@@ -47,14 +48,14 @@ export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => 
               items: {
                 type: Type.OBJECT,
                 properties: {
-                  name: { type: Type.STRING, description: "Nome visível no perfil" },
-                  username: { type: Type.STRING, description: "Username do Instagram sem @" },
-                  profileLink: { type: Type.STRING, description: "Link completo do perfil" },
-                  bio: { type: Type.STRING, description: "Resumo ou Bio do perfil" },
-                  location: { type: Type.STRING, description: "Localização se disponível" },
-                  hasWebsite: { type: Type.BOOLEAN, description: "Se possui site profissional próprio" },
+                  name: { type: Type.STRING },
+                  username: { type: Type.STRING },
+                  profileLink: { type: Type.STRING },
+                  bio: { type: Type.STRING },
+                  location: { type: Type.STRING },
+                  hasWebsite: { type: Type.BOOLEAN },
                   websiteUrl: { type: Type.STRING, nullable: true },
-                  phone: { type: Type.STRING, nullable: true, description: "WhatsApp ou telefone extraído" },
+                  phone: { type: Type.STRING, nullable: true },
                   followers: { type: Type.STRING, nullable: true }
                 },
                 required: ["name", "username", "profileLink", "bio", "location", "hasWebsite"]
@@ -65,25 +66,30 @@ export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => 
       }
     });
 
-    // Fix: Clean citations like [1], [2] that Google Search Grounding might inject into the JSON text
-    // The library returns text as a property, not a method.
+    // Access text property directly (not as a method)
     let resultText = response.text || '';
-    resultText = resultText.replace(/\[\d+\]/g, '').trim();
     
-    // Attempt to extract JSON if there's any surrounding text mixed with grounding citations
-    const jsonMatch = resultText.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
-    if (jsonMatch) {
-      resultText = jsonMatch[0];
+    // Remove grounding citations [1], [2] etc that might be present in the output
+    resultText = resultText.replace(/\[\d+\]/g, '');
+    
+    // Clean potential markdown blocks
+    resultText = resultText.replace(/```json/g, '').replace(/```/g, '').trim();
+    
+    // Ensure we extract only the JSON object part
+    const firstBrace = resultText.indexOf('{');
+    const lastBrace = resultText.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      resultText = resultText.substring(firstBrace, lastBrace + 1);
     }
 
     if (!resultText) {
-      throw new Error("O modelo não retornou dados. Tente uma busca mais específica ou verifique sua chave API.");
+      throw new Error("A IA não gerou uma resposta válida para os termos pesquisados.");
     }
 
     const data = JSON.parse(resultText);
     let leads: Lead[] = (data.leads || []).map((l: any, idx: number) => ({
       ...l,
-      id: `lead-real-${Date.now()}-${idx}`,
+      id: `lead-${Date.now()}-${idx}`,
       niche: niche,
       hasInstagram: true
     }));
@@ -92,10 +98,9 @@ export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => 
       leads = leads.filter(l => !l.hasWebsite);
     }
 
-    // Fix: Correct extraction of grounding sources following the library response structure.
-    // Grounding URLs MUST be extracted and displayed as per guidelines.
+    // Extract grounding sources as required when using googleSearch tool
     const sources: GroundingSource[] = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => ({
-      title: chunk.web?.title || "Fonte da Busca",
+      title: chunk.web?.title || "Referência Web",
       uri: chunk.web?.uri || ""
     })).filter((s: any) => s.uri) || [];
 
@@ -104,13 +109,12 @@ export const mineLeads = async (config: SearchConfig): Promise<MiningResult> => 
       sources
     };
   } catch (error: any) {
-    console.error("Mining error:", error);
+    console.error("Critical Mining Failure:", error);
     
-    // Tratamento específico para erro de chave ausente no Pro como exigido pelas diretrizes.
-    if (error.message?.includes("Requested entity was not found")) {
-      throw new Error("Chave API inválida ou não encontrada. Por favor, clique em 'Configurar Chave API' e selecione um projeto faturável.");
+    if (error.message?.includes("Requested entity was not found") || error.message?.includes("API key")) {
+      throw new Error("A Chave API selecionada expirou ou não tem créditos para o modelo Pro. Reconfigure sua chave.");
     }
     
-    throw new Error(`Erro na engine de mineração: ${error.message}`);
+    throw new Error(`A varredura falhou: ${error.message}`);
   }
 };
